@@ -8,8 +8,9 @@ SPI. Not all sensor types are supported yet.
 Contributions welcome 💪
 
 - [x] Theromcouple J,K,E,N,R,S,T,B
-- [x] RTD
-- [x] Thermistor
+- [ ] Custom Theromcouple
+- [ ] RTD
+- [ ] Thermistor
 - [ ] Diode
 - [ ] Sense Resistor
 - [ ] Direct ADC
