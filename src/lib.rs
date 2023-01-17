@@ -16,11 +16,14 @@
 
 use bytebuffer::ByteBuffer;
 use embedded_hal::spi::{SpiDevice, SpiBus};
+use fixed::{FixedU32, types::extra::U25};
 
 const LTC2983_WRITE: u8 = 0x2;
 const LTC2983_READ: u8 = 0x3;
 
 const STATUS_REGISTER: u16 = 0x000;
+const GLOBAL_CONFIG_REGISTER: u16 = 0x0F0;
+const MULTI_CHANNEL_MASK_REGISTER: u16 = 0x0F4;
 
 #[derive(Debug)]
 pub enum SensorConfiguration {
@@ -55,6 +58,10 @@ impl ThermocoupleParameters {
     }
 }
 
+pub struct SenseResistorParameters {
+
+}
+
 #[allow(non_camel_case_types)]
 #[derive(Debug)]
 pub enum ThermalProbeType {
@@ -81,7 +88,7 @@ pub enum ThermalProbeType {
     Thermistor_44008_44032,
     Thermistor_YSI400,
     Thermistor_Spectrum,
-    SenseResistor
+    SenseResistor(f32)
 }
 
 impl ThermalProbeType {
@@ -110,7 +117,7 @@ impl ThermalProbeType {
             ThermalProbeType::Thermistor_44008_44032 => 23,
             ThermalProbeType::Thermistor_YSI400 => 24,
             ThermalProbeType::Thermistor_Spectrum => 25,
-            ThermalProbeType::SenseResistor => 29
+            ThermalProbeType::SenseResistor(_) => 29
         }
     }
 }
@@ -230,7 +237,20 @@ impl LTC2983Channel {
 
 #[derive(Debug)]
 pub struct LTC2983Status {
+    start: bool,
+    done: bool,
+    //1 bit unused
+    channel_selection: u8
+}
 
+impl From<u8> for LTC2983Status {
+    fn from(data: u8) -> Self {
+        LTC2983Status {
+            start: data & 0x80 == 0x80,
+            done: data & 0x40 == 0x40,
+            channel_selection: data & 0x1f
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -261,6 +281,22 @@ pub struct LTC2983<SPI> {
 impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
     pub fn new(spi_device: SPI) -> Self {
         LTC2983 { spi_device }
+    }
+
+    pub fn status(&mut self) -> Result<LTC2983Status, SPI::Error> {
+        let mut transfer_bytes = ByteBuffer::new();
+        transfer_bytes.write_u8(LTC2983_READ);
+        transfer_bytes.write_u16(STATUS_REGISTER);
+        transfer_bytes.write_u8(0x0); //Dummy Data
+
+        let mut recv: [u8; 4] = [0, 0, 0, 0];
+        match self.spi_device.transfer(&mut recv, transfer_bytes.as_bytes()) {
+            Ok(_) => {
+                Ok(LTC2983Status::from(recv[3]))
+            }
+            Err(err) => Err(err)
+        }
+
     }
 
     pub fn setup_channel(&mut self,
@@ -312,8 +348,18 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
             ThermalProbeType::Thermistor_Spectrum    => {
                 unimplemented!();
             }
-            ThermalProbeType::SenseResistor => {
-                todo!();
+            ThermalProbeType::SenseResistor(resistance) => {
+                let mut write_sequence = ByteBuffer::new();
+                write_sequence.write_u8(LTC2983_WRITE);              //the first byte of the communication indicates a read or write operation
+                write_sequence.write_u16(channel.start_address());   //the second two bytes hold the address to ẁrite to
+                // The 32 bit data to be written to the channel configuration register has the following format for sense resistors
+                // |31-27| Thermocouple Type
+                write_sequence.write_bits(probe.identifier(), 5);
+                // |26-0| Fixed Point Floating point (17,10) no sign bit representing the resistance
+                let resistance_fixed_point = FixedU32::<U25>::from_num(*resistance);
+                write_sequence.write_bits(resistance_fixed_point.to_bits().into(), 27);
+
+                self.spi_device.write(write_sequence.as_bytes())
             }
         }
     }
