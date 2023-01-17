@@ -1,7 +1,7 @@
 LTC2983
 =======
 
-A create to provide an implemantition of the communication with the
+A create to provide an implementation of the communication with the
 `LTC2983` (Multi Sensor High Accuracy Digital Temperature Measurement System) via
 SPI. Not all sensor types are supported yet.
 

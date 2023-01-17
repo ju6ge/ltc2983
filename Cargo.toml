@@ -1,9 +1,13 @@
 [package]
 name = "ltc2983"
+description = "A create to provide an implementation of the communication with the `LTC2983` (Multi Sensor High Accuracy Digital Temperature Measurement System)"
+repository = "https://github.com/ju6ge/ltc2983"
+homepage = "https://github.com/ju6ge/ltc2983"
 version = "0.1.0"
 edition = "2021"
 authors = [ "ju6ge <judge@felixrichter.tech>" ]
-license = "European Union Public License 1.2"
+license = "EUPL-1.2"
+keywords = [ "embedded-hal", "spi", "driver" ]
 license-file = "LICENSE"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
