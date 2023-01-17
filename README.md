@@ -11,6 +11,6 @@ Contributions welcome 💪
 - [ ] Custom Theromcouple
 - [ ] RTD
 - [ ] Thermistor
+- [x] Sense Resistor
 - [ ] Diode
-- [ ] Sense Resistor
 - [ ] Direct ADC
