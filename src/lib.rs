@@ -361,13 +361,13 @@ pub struct LTC2983<SPI> {
     spi_device: SPI,
 }
 
-impl<SPI> LTC2983<SPI> where SPI: SpiDevice + embedded_hal::spi::ErrorType<Error = SPI>, SPI::Bus: SpiBus {
+impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
     pub fn new(spi_device: SPI) -> Self {
         LTC2983 { spi_device }
     }
 
     //read device satatus
-    pub fn status(&mut self) -> Result<LTC2983Status, LTC2983Error<SPI>> {
+    pub fn status(&mut self) -> Result<LTC2983Status, LTC2983Error<SPI::Error>> {
         let mut read_status_bytes = ByteBuffer::new();
         read_status_bytes.write_u8(LTC2983_READ);
         read_status_bytes.write_u16(STATUS_REGISTER);
@@ -386,7 +386,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice + embedded_hal::spi::ErrorType<Error
     //write channel configuration
     pub fn setup_channel(&mut self,
                          probe: ThermalProbeType,
-                         channel: LTC2983Channel) -> Result<(), LTC2983Error<SPI>>
+                         channel: LTC2983Channel) -> Result<(), LTC2983Error<SPI::Error>>
     {
         match &probe {
             ThermalProbeType::Thermocouple_J(param) |
@@ -475,7 +475,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice + embedded_hal::spi::ErrorType<Error
         }
     }
 
-    pub fn start_conversion(&mut self, channel: LTC2983Channel) -> Result<(), LTC2983Error<SPI>> {
+    pub fn start_conversion(&mut self, channel: LTC2983Channel) -> Result<(), LTC2983Error<SPI::Error>> {
         //start measurement
         let mut start_command_bytes = ByteBuffer::new();
         start_command_bytes.write_u8(LTC2983_WRITE);
@@ -488,7 +488,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice + embedded_hal::spi::ErrorType<Error
         Ok(())
     }
 
-    pub fn start_multi_conversion(&mut self, channels: Vec<LTC2983Channel>) -> Result<(), LTC2983Error<SPI>> {
+    pub fn start_multi_conversion(&mut self, channels: Vec<LTC2983Channel>) -> Result<(), LTC2983Error<SPI::Error>> {
         let mut write_channel_mask = ByteBuffer::new();
         let mut mask = 0x0;
         for chan in channels {
@@ -509,7 +509,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice + embedded_hal::spi::ErrorType<Error
         Ok(())
     }
 
-    pub fn read_temperature(&mut self, channel: LTC2983Channel) -> Result<LTC2983Result, LTC2983Error<SPI>> {
+    pub fn read_temperature(&mut self, channel: LTC2983Channel) -> Result<LTC2983Result, LTC2983Error<SPI::Error>> {
         let mut read_temperature_bytes = ByteBuffer::new();
         read_temperature_bytes.write_u8(LTC2983_READ);
         read_temperature_bytes.write_u16(channel.result_address());
@@ -521,7 +521,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice + embedded_hal::spi::ErrorType<Error
         Ok(LTC2983Result::from(recv))
     }
 
-    pub fn read_multi_temperature(&mut self, channels: Vec<LTC2983Channel>) -> Vec<Result<LTC2983Result, LTC2983Error<SPI>>> {
+    pub fn read_multi_temperature(&mut self, channels: Vec<LTC2983Channel>) -> Vec<Result<LTC2983Result, LTC2983Error<SPI::Error>>> {
         channels.iter().map(|chan| {
             self.read_temperature(*chan)
         }).collect()
