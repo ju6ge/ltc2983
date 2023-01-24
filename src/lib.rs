@@ -14,9 +14,12 @@
 //! - [ ] Diode
 //! - [ ] Direct ADC
 
+use std::convert::TryInto;
+
 use bytebuffer::ByteBuffer;
 use embedded_hal::spi::{SpiDevice, SpiBus};
-use fixed::{FixedU32, types::extra::U25};
+use fixed::{FixedU32, types::extra::{U25, U10}, FixedI32};
+use thiserror::Error;
 
 const LTC2983_WRITE: u8 = 0x2;
 const LTC2983_READ: u8 = 0x3;
@@ -29,6 +32,12 @@ const MULTI_CHANNEL_MASK_REGISTER: u16 = 0x0F4;
 pub enum SensorConfiguration {
     SingleEnded,
     Differential
+}
+
+impl Default for SensorConfiguration {
+    fn default() -> Self {
+        Self::SingleEnded
+    }
 }
 
 impl SensorConfiguration {
@@ -48,18 +57,38 @@ pub struct ThermocoupleParameters {
     custom_address: Option<u16>
 }
 
+impl Default for ThermocoupleParameters {
+    fn default() -> Self {
+        Self { cold_junction_channel: None,
+               sensor_configuration: Default::default(),
+               oc_current: Default::default(),
+               custom_address: None }
+    }
+}
+
 impl ThermocoupleParameters {
-    pub fn sensor_configuration(&self) -> u64 {
+    pub fn cold_junction(mut self, chan: LTC2983Channel) -> Self {
+        self.cold_junction_channel = Some(chan);
+        self
+    }
+
+    pub fn sensor_configuration(mut self, config: SensorConfiguration) -> Self {
+        self.sensor_configuration = config;
+        self
+    }
+
+    pub fn custom_address(mut self, addr: u16) -> Self {
+        self.custom_address = Some(addr);
+        self
+    }
+
+    pub fn config_to_bytes(&self) -> u64 {
         let mut buf = ByteBuffer::new();
         buf.write_bits(0, 4);
         buf.write_bits(self.sensor_configuration.identifier(), 1);
         buf.write_bits(self.oc_current.identifier(), 3);
         buf.read_u8().unwrap().into()
     }
-}
-
-pub struct SenseResistorParameters {
-
 }
 
 #[allow(non_camel_case_types)]
@@ -94,30 +123,30 @@ pub enum ThermalProbeType {
 impl ThermalProbeType {
     pub fn identifier(&self) -> u64 {
         match self {
-            ThermalProbeType::Thermocouple_J(_) => 1,
-            ThermalProbeType::Thermocouple_K(_) => 2,
-            ThermalProbeType::Thermocouple_E(_) => 3,
-            ThermalProbeType::Thermocouple_N(_) => 4,
-            ThermalProbeType::Thermocouple_R(_) => 5,
-            ThermalProbeType::Thermocouple_S(_) => 6,
-            ThermalProbeType::Thermocouple_T(_) => 7,
-            ThermalProbeType::Thermocouple_B(_) => 8,
-            ThermalProbeType::RTD_PT10 => 10,
-            ThermalProbeType::RTD_PT50 => 11,
-            ThermalProbeType::RTD_PT100 => 12,
-            ThermalProbeType::RTD_PT200 => 13,
-            ThermalProbeType::RTD_PT500 => 14,
-            ThermalProbeType::RTD_PT1000 => 15,
-            ThermalProbeType::RTD_1000 => 16,
-            ThermalProbeType::RTD_NI120 => 17,
+            ThermalProbeType::Thermocouple_J(_)      => 1,
+            ThermalProbeType::Thermocouple_K(_)      => 2,
+            ThermalProbeType::Thermocouple_E(_)      => 3,
+            ThermalProbeType::Thermocouple_N(_)      => 4,
+            ThermalProbeType::Thermocouple_R(_)      => 5,
+            ThermalProbeType::Thermocouple_S(_)      => 6,
+            ThermalProbeType::Thermocouple_T(_)      => 7,
+            ThermalProbeType::Thermocouple_B(_)      => 8,
+            ThermalProbeType::RTD_PT10               => 10,
+            ThermalProbeType::RTD_PT50               => 11,
+            ThermalProbeType::RTD_PT100              => 12,
+            ThermalProbeType::RTD_PT200              => 13,
+            ThermalProbeType::RTD_PT500              => 14,
+            ThermalProbeType::RTD_PT1000             => 15,
+            ThermalProbeType::RTD_1000               => 16,
+            ThermalProbeType::RTD_NI120              => 17,
             ThermalProbeType::Thermistor_44004_44033 => 19,
             ThermalProbeType::Thermistor_44005_44030 => 20,
             ThermalProbeType::Thermistor_44007_44034 => 21,
             ThermalProbeType::Thermistor_44006_44031 => 22,
             ThermalProbeType::Thermistor_44008_44032 => 23,
-            ThermalProbeType::Thermistor_YSI400 => 24,
-            ThermalProbeType::Thermistor_Spectrum => 25,
-            ThermalProbeType::SenseResistor(_) => 29
+            ThermalProbeType::Thermistor_YSI400      => 24,
+            ThermalProbeType::Thermistor_Spectrum    => 25,
+            ThermalProbeType::SenseResistor(_)       => 29
         }
     }
 }
@@ -126,7 +155,7 @@ impl ThermalProbeType {
 pub enum LTC2983Result {
     SensorHardFault,
     HardADCOutOfRange,
-    CJHardFault(f32),
+    CJHardFault,
     CJSoftFault(f32),
     SensorOverRange(f32),
     SensorUnderRange(f32),
@@ -134,7 +163,43 @@ pub enum LTC2983Result {
     Valid(f32)
 }
 
-#[derive(Debug)]
+impl From<[u8; 4]> for LTC2983Result {
+    fn from(bytes: [u8; 4]) -> Self {
+        let value = FixedI32::<U10>::from_be_bytes(reformat_fixedf24_to_fixed_f32(bytes[1..=3].try_into().unwrap()));
+        match bytes[0] {
+            0x01 => {
+                LTC2983Result::Valid(value.to_num())
+            }
+            0x02 => {
+                LTC2983Result::ADCOutOfRange(value.to_num())
+            }
+            0x04 => {
+                LTC2983Result::SensorUnderRange(value.to_num())
+            }
+            0x08 => {
+                LTC2983Result::SensorOverRange(value.to_num())
+            }
+            0x10 => {
+                LTC2983Result::CJSoftFault(value.to_num())
+            }
+            0x20 => {
+                LTC2983Result::CJHardFault
+            }
+            0x40 => {
+                LTC2983Result::HardADCOutOfRange
+            }
+            0x80 => {
+                LTC2983Result::SensorHardFault
+            }
+            _ => {
+                //error codes are bit masks, only one bit should be active at a time
+                unreachable!()
+            }
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
 pub enum LTC2983Channel {
     CH1,
     CH2,
@@ -211,15 +276,15 @@ impl LTC2983Channel {
 
     pub fn identifier(&self) -> u64 {
         match self {
-            LTC2983Channel::CH1 => 1,
-            LTC2983Channel::CH2 => 2,
-            LTC2983Channel::CH3 => 3,
-            LTC2983Channel::CH4 => 4,
-            LTC2983Channel::CH5 => 5,
-            LTC2983Channel::CH6 => 6,
-            LTC2983Channel::CH7 => 7,
-            LTC2983Channel::CH8 => 8,
-            LTC2983Channel::CH9 => 9,
+            LTC2983Channel::CH1  => 1,
+            LTC2983Channel::CH2  => 2,
+            LTC2983Channel::CH3  => 3,
+            LTC2983Channel::CH4  => 4,
+            LTC2983Channel::CH5  => 5,
+            LTC2983Channel::CH6  => 6,
+            LTC2983Channel::CH7  => 7,
+            LTC2983Channel::CH8  => 8,
+            LTC2983Channel::CH9  => 9,
             LTC2983Channel::CH10 => 10,
             LTC2983Channel::CH11 => 11,
             LTC2983Channel::CH12 => 12,
@@ -232,6 +297,10 @@ impl LTC2983Channel {
             LTC2983Channel::CH19 => 19,
             LTC2983Channel::CH20 => 20,
         }
+    }
+
+    pub fn mask(&self) -> u32 {
+       0x1 << (self.identifier() - 1)
     }
 }
 
@@ -262,6 +331,12 @@ pub enum LTC2983OcCurrent {
     I1mA
 }
 
+impl Default for LTC2983OcCurrent {
+    fn default() -> Self {
+        Self::I10uA
+    }
+}
+
 impl LTC2983OcCurrent {
     pub fn identifier(&self) -> u64 {
         match self {
@@ -274,34 +349,44 @@ impl LTC2983OcCurrent {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum LTC2983Error<SPI> {
+    #[error("SPI communication error: {0:?}")]
+    SpiError(#[from] SPI),
+    #[error("Channel {0:?} not configured!")]
+    ChannelUnconfigured(LTC2983Channel),
+}
+
 pub struct LTC2983<SPI> {
     spi_device: SPI,
 }
 
-impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
+impl<SPI> LTC2983<SPI> where SPI: SpiDevice + embedded_hal::spi::ErrorType<Error = SPI>, SPI::Bus: SpiBus {
     pub fn new(spi_device: SPI) -> Self {
         LTC2983 { spi_device }
     }
 
-    pub fn status(&mut self) -> Result<LTC2983Status, SPI::Error> {
-        let mut transfer_bytes = ByteBuffer::new();
-        transfer_bytes.write_u8(LTC2983_READ);
-        transfer_bytes.write_u16(STATUS_REGISTER);
-        transfer_bytes.write_u8(0x0); //Dummy Data
+    //read device satatus
+    pub fn status(&mut self) -> Result<LTC2983Status, LTC2983Error<SPI>> {
+        let mut read_status_bytes = ByteBuffer::new();
+        read_status_bytes.write_u8(LTC2983_READ);
+        read_status_bytes.write_u16(STATUS_REGISTER);
+        read_status_bytes.write_u8(0x0); //Dummy Data
 
         let mut recv: [u8; 4] = [0, 0, 0, 0];
-        match self.spi_device.transfer(&mut recv, transfer_bytes.as_bytes()) {
+        match self.spi_device.transfer(&mut recv, read_status_bytes.as_bytes()) {
             Ok(_) => {
                 Ok(LTC2983Status::from(recv[3]))
             }
-            Err(err) => Err(err)
+            Err(err) => Err(LTC2983Error::SpiError(err))
         }
 
     }
 
+    //write channel configuration
     pub fn setup_channel(&mut self,
                          probe: ThermalProbeType,
-                         channel: LTC2983Channel) -> Result<(), SPI::Error>
+                         channel: LTC2983Channel) -> Result<(), LTC2983Error<SPI>>
     {
         match &probe {
             ThermalProbeType::Thermocouple_J(param) |
@@ -321,13 +406,14 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
                 // |26-22| Could Junction Channel ID -> if no cold junction compensation is used this value will be 0
                 write_sequence.write_bits(match &param.cold_junction_channel { None => 0, Some(chan) => chan.identifier() }, 5);
                 // |21-18| Sensor Configuration
-                write_sequence.write_bits(param.sensor_configuration(), 4);
+                write_sequence.write_bits(param.config_to_bytes(), 4);
                 // |17-12| Unused => equals 0
                 write_sequence.write_bits(0, 6);
                 // |11-0| Custom Thermocouple Data Pointer
                 write_sequence.write_bits(match &param.custom_address { None => 0, Some(addr) => *addr}.into(), 12);
 
-                self.spi_device.write(write_sequence.as_bytes())
+                self.spi_device.write(write_sequence.as_bytes())?;
+                Ok(())
             }
             ThermalProbeType::RTD_PT10   |
             ThermalProbeType::RTD_PT50   |
@@ -359,25 +445,139 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
                 let resistance_fixed_point = FixedU32::<U25>::from_num(*resistance);
                 write_sequence.write_bits(resistance_fixed_point.to_bits().into(), 27);
 
-                self.spi_device.write(write_sequence.as_bytes())
+                self.spi_device.write(write_sequence.as_bytes())?;
+                Ok(())
             }
         }
     }
 
-    pub async fn read_temperature(&self, channel: LTC2983Channel) -> Result<LTC2983Result, std::io::Error> {
-        todo!();
+    //check if the channel is configured
+    pub fn channel_enabled(&mut self, channel: LTC2983Channel) -> bool {
+        let mut read_sequence = ByteBuffer::new();
+        read_sequence.write_u8(LTC2983_READ);
+        read_sequence.write_u16(channel.start_address());
+        read_sequence.write_u8(0); //Dummy Data for read
+
+        let mut recv: [u8; 4] = [0, 0, 0, 0];
+        match self.spi_device.transfer(&mut recv, read_sequence.as_bytes()) {
+            Ok(_) => {
+                //if the upper 5bits of the channel are zero, then the channel is disabled so checking for not zero means the channel is enabled
+                if recv[3] & 0xf8 != 0 {
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(_err) => {
+                //on communication error assume unconfigured channel
+                false
+            }
+        }
     }
 
-    pub async fn read_multi_temperature(&self, channels: Vec<LTC2983Channel>) -> Result<Vec<LTC2983Result>, std::io::Error> {
-        todo!();
+    pub fn start_conversion(&mut self, channel: LTC2983Channel) -> Result<(), LTC2983Error<SPI>> {
+        //start measurement
+        let mut start_command_bytes = ByteBuffer::new();
+        start_command_bytes.write_u8(LTC2983_WRITE);
+        start_command_bytes.write_u16(STATUS_REGISTER);
+        start_command_bytes.write_bits(0x4, 3);
+        start_command_bytes.write_bits(channel.identifier(), 5);
+
+        self.spi_device.write(start_command_bytes.as_bytes())?;
+
+        Ok(())
+    }
+
+    pub fn start_multi_conversion(&mut self, channels: Vec<LTC2983Channel>) -> Result<(), LTC2983Error<SPI>> {
+        let mut write_channel_mask = ByteBuffer::new();
+        let mut mask = 0x0;
+        for chan in channels {
+            mask |= chan.mask();
+        }
+        write_channel_mask.write_u8(LTC2983_WRITE);
+        write_channel_mask.write_u16(MULTI_CHANNEL_MASK_REGISTER);
+        write_channel_mask.write_u32(mask);
+        self.spi_device.write(write_channel_mask.as_bytes())?;
+
+        let mut start_multi_conversion_bytes = ByteBuffer::new();
+        start_multi_conversion_bytes.write_u8(LTC2983_WRITE);
+        start_multi_conversion_bytes.write_u16(STATUS_REGISTER);
+        start_multi_conversion_bytes.write_bits(0x4, 3);
+        start_multi_conversion_bytes.write_bits(0x0, 5);
+
+        self.spi_device.write(start_multi_conversion_bytes.as_bytes())?;
+        Ok(())
+    }
+
+    pub fn read_temperature(&mut self, channel: LTC2983Channel) -> Result<LTC2983Result, LTC2983Error<SPI>> {
+        let mut read_temperature_bytes = ByteBuffer::new();
+        read_temperature_bytes.write_u8(LTC2983_READ);
+        read_temperature_bytes.write_u16(channel.result_address());
+        read_temperature_bytes.write_u32(0x0); //Dummy bytes for reading
+
+        let mut recv: [u8; 4] = [0, 0, 0, 0];
+        self.spi_device.transfer(&mut recv, read_temperature_bytes.as_bytes())?;
+
+        Ok(LTC2983Result::from(recv))
+    }
+
+    pub fn read_multi_temperature(&mut self, channels: Vec<LTC2983Channel>) -> Vec<Result<LTC2983Result, LTC2983Error<SPI>>> {
+        channels.iter().map(|chan| {
+            self.read_temperature(*chan)
+        }).collect()
     }
 }
 
-//#[cfg(test)]
-//mod tests {
-//    use super::*;
-//
-//    #[test]
-//    fn it_works() {
-//    }
-//}
+fn reformat_fixedf24_to_fixed_f32(bytes_f24: &[u8; 3]) -> [u8; 4]{
+    if bytes_f24[0] & 0x80 == 0x80 {
+        [0xff, bytes_f24[0], bytes_f24[1], bytes_f24[2]]
+    } else {
+        [0x00, bytes_f24[0], bytes_f24[1], bytes_f24[2]]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fixed::{FixedI32, types::extra::U10};
+
+    use super::*;
+
+    #[test]
+    fn test_fixedf24_u10_to_f32_signed() {
+        let bytes: [u8; 3] = [ 0x7f, 0xff, 0xff ];
+        let value = FixedI32::<U10>::from_be_bytes(reformat_fixedf24_to_fixed_f32(&bytes));
+        assert!(value.to_num::<f32>() - (8191.999 as f32) < 1./1024.); // error should be smaller than smallest fixed point value 1./1024.
+
+        let bytes: [u8; 3] = [ 0x10, 0x00, 0x00 ];
+        let value = FixedI32::<U10>::from_be_bytes(reformat_fixedf24_to_fixed_f32(&bytes));
+        assert!(value.to_num::<f32>() - (1024 as f32) < 1./1024.); // error should be smaller than smallest fixed point value 1./1024.
+
+        let bytes: [u8; 3] = [ 0x00, 0x04, 0x00 ];
+        let value = FixedI32::<U10>::from_be_bytes(reformat_fixedf24_to_fixed_f32(&bytes));
+        assert!(value.to_num::<f32>() - (1 as f32) < 1./1024.); // error should be smaller than smallest fixed point value 1./1024.
+
+        let bytes: [u8; 3] = [ 0x00, 0x00, 0x01 ];
+        let value = FixedI32::<U10>::from_be_bytes(reformat_fixedf24_to_fixed_f32(&bytes));
+        assert!(value.to_num::<f32>() - (1./1024. as f32) < 1./1024.); // error should be smaller than smallest fixed point value 1./1024.
+
+        let bytes: [u8; 3] = [ 0x00, 0x00, 0x00 ];
+        let value = FixedI32::<U10>::from_be_bytes(reformat_fixedf24_to_fixed_f32(&bytes));
+        assert!(value.to_num::<f32>() - (0. as f32) < 1./1024.); // error should be smaller than smallest fixed point value 1./1024.
+
+        let bytes: [u8; 3] = [ 0xff, 0xff, 0xff ];
+        let value = FixedI32::<U10>::from_be_bytes(reformat_fixedf24_to_fixed_f32(&bytes));
+        assert!(value.to_num::<f32>() - (-1./1024. as f32) < 1./1024.); // error should be smaller than smallest fixed point value 1./1024.
+
+        let bytes: [u8; 3] = [ 0xff, 0xfc, 0x00 ];
+        let value = FixedI32::<U10>::from_be_bytes(reformat_fixedf24_to_fixed_f32(&bytes));
+        assert!(value.to_num::<f32>() - (-1 as f32) < 1./1024.); // error should be smaller than smallest fixed point value 1./1024.
+
+        let bytes: [u8; 3] = [ 0xfb, 0xbb, 0x67 ];
+        let value = FixedI32::<U10>::from_be_bytes(reformat_fixedf24_to_fixed_f32(&bytes));
+        assert!(value.to_num::<f32>() - (-273.15 as f32) < 1./1024.); // error should be smaller than smallest fixed point value 1./1024.
+
+        let bytes: [u8; 3] = [ 0xf8, 0xd1, 0x52 ];
+        let value = FixedI32::<U10>::from_be_bytes(reformat_fixedf24_to_fixed_f32(&bytes));
+        assert!(value.to_num::<f32>() - (-459.67 as f32) < 1./1027.); // error should be smaller than smallest fixed point value 1./1024.
+    }
+}
