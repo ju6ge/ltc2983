@@ -12,5 +12,5 @@ Contributions welcome 💪
 - [ ] RTD
 - [ ] Thermistor
 - [x] Sense Resistor
-- [ ] Diode
+- [x] Diode
 - [ ] Direct ADC

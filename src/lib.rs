@@ -11,14 +11,14 @@
 //! - [ ] RTD
 //! - [ ] Thermistor
 //! - [x] Sense Resistor
-//! - [ ] Diode
+//! - [x] Diode
 //! - [ ] Direct ADC
 
 use std::convert::TryInto;
 
 use bytebuffer::ByteBuffer;
 use embedded_hal::spi::{SpiDevice, SpiBus};
-use fixed::{FixedU32, types::extra::{U25, U10}, FixedI32};
+use fixed::{FixedU32, types::extra::{U25, U10, U20}, FixedI32};
 use thiserror::Error;
 
 const LTC2983_WRITE: u8 = 0x2;
@@ -82,14 +82,119 @@ impl ThermocoupleParameters {
         self
     }
 
-    pub fn config_to_bytes(&self) -> u64 {
-        let mut buf = ByteBuffer::new();
-        buf.write_bits(0, 4);
-        buf.write_bits(self.sensor_configuration.identifier(), 1);
-        buf.write_bits(self.oc_current.identifier(), 3);
-        buf.read_u8().unwrap().into()
+    pub fn config_to_bits(&self) -> u64 {
+        0x0 | (self.sensor_configuration.identifier() << 3) | self.oc_current.identifier()
     }
 }
+
+#[derive(Debug)]
+pub enum DiodeReadingCount {
+    READ2,
+    READ3
+}
+
+impl Default for DiodeReadingCount {
+    fn default() -> Self {
+        Self::READ2
+    }
+}
+
+impl DiodeReadingCount {
+    pub fn identifier(&self) -> u64 {
+        match self {
+            DiodeReadingCount::READ2 => 0,
+            DiodeReadingCount::READ3 => 1,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum DiodeExcitationCurrent {
+    I10uA,
+    I20uA,
+    I40uA,
+    I80uA
+}
+
+impl Default for DiodeExcitationCurrent {
+    fn default() -> Self {
+        Self::I10uA
+    }
+}
+
+impl DiodeExcitationCurrent {
+    pub fn identifier(&self) -> u64 {
+        match self {
+            DiodeExcitationCurrent::I10uA => 0,
+            DiodeExcitationCurrent::I20uA => 1,
+            DiodeExcitationCurrent::I40uA => 2,
+            DiodeExcitationCurrent::I80uA => 3,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DiodeParameters {
+    sensor_configuration: SensorConfiguration,
+    num_reading: DiodeReadingCount,
+    avg: bool,
+    excitation_current: DiodeExcitationCurrent,
+    idealitiy_factor: Option<f32>
+}
+
+impl Default for DiodeParameters {
+    fn default() -> Self {
+        Self {
+            sensor_configuration: Default::default(),
+            num_reading: Default::default(),
+            excitation_current: Default::default(),
+            idealitiy_factor: None,
+            avg: true,
+        }
+    }
+}
+
+impl DiodeParameters {
+    pub fn sensor_configuration(mut self, config: SensorConfiguration) -> Self {
+        self.sensor_configuration = config;
+        self
+    }
+
+    pub fn num_reading(mut self, cnt: DiodeReadingCount) -> Self {
+        self.num_reading = cnt;
+        self
+    }
+
+    pub fn excitation_current(mut self, current: DiodeExcitationCurrent) -> Self {
+        self.excitation_current = current;
+        self
+    }
+
+    pub fn use_avg(mut self, flag: bool) -> Self {
+        self.avg = flag;
+        self
+    }
+
+    pub fn ideality_factor(mut self, factor: f32) -> Self {
+        self.idealitiy_factor = Some(factor);
+        self
+    }
+
+    pub fn to_bits(&self) -> u64 {
+        0x0 | (self.sensor_configuration.identifier() << 26)
+            | (self.num_reading.identifier() << 25)
+            | ((self.avg as u64) << 24)
+            | (self.excitation_current.identifier() << 22)
+            | ( match self.idealitiy_factor {
+                None => 0x0,
+                Some(factor) => {
+                    let factor_fixed_point = FixedU32::<U20>::from_num(factor);
+                    (factor_fixed_point.to_bits() & 0x3fffff) as u64 //mask the upper bits to only include the lower 22 bits
+                }
+            })
+    }
+}
+
 
 #[allow(non_camel_case_types)]
 #[derive(Debug)]
@@ -117,6 +222,7 @@ pub enum ThermalProbeType {
     Thermistor_44008_44032,
     Thermistor_YSI400,
     Thermistor_Spectrum,
+    Diode(DiodeParameters),
     SenseResistor(f32)
 }
 
@@ -146,6 +252,7 @@ impl ThermalProbeType {
             ThermalProbeType::Thermistor_44008_44032 => 23,
             ThermalProbeType::Thermistor_YSI400      => 24,
             ThermalProbeType::Thermistor_Spectrum    => 25,
+            ThermalProbeType::Diode(_)               => 28,
             ThermalProbeType::SenseResistor(_)       => 29
         }
     }
@@ -193,7 +300,7 @@ impl From<[u8; 4]> for LTC2983Result {
             }
             _ => {
                 //error codes are bit masks, only one bit should be active at a time
-                println!("0x{:x}",bytes[0]);
+                println!("Error code unknown: 0x{:x}",bytes[0]);
                 unreachable!()
             }
         }
@@ -413,7 +520,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
                 // |26-22| Could Junction Channel ID -> if no cold junction compensation is used this value will be 0
                 write_sequence.write_bits(match &param.cold_junction_channel { None => 0, Some(chan) => chan.identifier() }, 5);
                 // |21-18| Sensor Configuration
-                write_sequence.write_bits(param.config_to_bytes(), 4);
+                write_sequence.write_bits(param.config_to_bits(), 4);
                 // |17-12| Unused => equals 0
                 write_sequence.write_bits(0, 6);
                 // |11-0| Custom Thermocouple Data Pointer
@@ -440,6 +547,16 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
             ThermalProbeType::Thermistor_YSI400      |
             ThermalProbeType::Thermistor_Spectrum    => {
                 unimplemented!();
+            }
+            ThermalProbeType::Diode(param) => {
+                let mut write_sequence = ByteBuffer::new();
+                write_sequence.write_u8(LTC2983_WRITE);              //the first byte of the communication indicates a read or write operation
+                write_sequence.write_u16(channel.start_address());   //the second two bytes hold the address to ẁrite to
+                write_sequence.write_bits(probe.identifier(), 5);
+                write_sequence.write_bits(param.to_bits(), 27);
+
+                self.spi_device.write(write_sequence.as_bytes())?;
+                Ok(())
             }
             ThermalProbeType::SenseResistor(resistance) => {
                 let mut write_sequence = ByteBuffer::new();
