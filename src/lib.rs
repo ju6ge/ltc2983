@@ -13,6 +13,26 @@
 //! - [x] Sense Resistor
 //! - [x] Diode
 //! - [ ] Direct ADC
+//!
+//!# Example
+//!``` rust
+//!    let mut ltc = LTC2983::new(device);
+//!
+//!    let _ = ltc.setup_channel(ltc2983::ThermalProbeType::Diode(ltc2983::DiodeParameters::default().ideality_factor(1.).excitation_current(ltc2983::DiodeExcitationCurrent::I20uA).num_reading(ltc2983::DiodeReadingCount::READ3)), ltc2983::LTC2983Channel::CH2);
+//!    let _ = ltc.setup_channel(ltc2983::ThermalProbeType::Thermocouple_T(ThermocoupleParameters::default().cold_junction(ltc2983::LTC2983Channel::CH2)), ltc2983::LTC2983Channel::CH1);
+//!
+//!    loop {
+//!        let _ = ltc.start_conversion(ltc2983::LTC2983Channel::CH1);
+//!        let mut status = ltc.status().unwrap();
+//!        while !status.done() {
+//!            status = ltc.status().unwrap();
+//!        }
+//!        let result = ltc.read_temperature(ltc2983::LTC2983Channel::CH1);
+//!        println!("{result:#?}");
+//!        sleep(Duration::new(1, 0));
+//!    }
+//!
+//!```
 
 use std::convert::TryInto;
 
@@ -260,49 +280,21 @@ impl ThermalProbeType {
 
 #[derive(Debug)]
 pub enum LTC2983Result {
-    SensorHardFault,
-    HardADCOutOfRange,
-    CJHardFault,
-    CJSoftFault(f32),
-    SensorOverRange(f32),
-    SensorUnderRange(f32),
-    ADCOutOfRange(f32),
+    Invalid(u8),
+    Suspect(f32, u8),
     Valid(f32)
 }
 
 impl From<[u8; 4]> for LTC2983Result {
     fn from(bytes: [u8; 4]) -> Self {
         let value = FixedI32::<U10>::from_be_bytes(reformat_fixedf24_to_fixed_f32(bytes[1..=3].try_into().unwrap()));
-        match bytes[0] {
-            0x01 => {
-                LTC2983Result::Valid(value.to_num())
-            }
-            0x02 => {
-                LTC2983Result::ADCOutOfRange(value.to_num())
-            }
-            0x04 => {
-                LTC2983Result::SensorUnderRange(value.to_num())
-            }
-            0x08 => {
-                LTC2983Result::SensorOverRange(value.to_num())
-            }
-            0x10 => {
-                LTC2983Result::CJSoftFault(value.to_num())
-            }
-            0x20 => {
-                LTC2983Result::CJHardFault
-            }
-            0x40 => {
-                LTC2983Result::HardADCOutOfRange
-            }
-            0x80 => {
-                LTC2983Result::SensorHardFault
-            }
-            _ => {
-                //error codes are bit masks, only one bit should be active at a time
-                println!("Error code unknown: 0x{:x}",bytes[0]);
-                unreachable!()
-            }
+        let error_code = bytes[0];
+        if error_code == 0x01 { // indicates valid result
+            LTC2983Result::Valid(value.to_num())
+        } else if error_code & 0xe != 0 { //if any of the upper three bits of the error code are set then the result is invalid
+            LTC2983Result::Invalid(error_code)
+        } else { // in all other cases the reading should regarded as suspect
+            LTC2983Result::Suspect(value.to_num(), error_code)
         }
     }
 }
