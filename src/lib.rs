@@ -193,6 +193,7 @@ impl From<[u8; 4]> for LTC2983Result {
             }
             _ => {
                 //error codes are bit masks, only one bit should be active at a time
+                println!("0x{:x}",bytes[0]);
                 unreachable!()
             }
         }
@@ -310,6 +311,12 @@ pub struct LTC2983Status {
     done: bool,
     //1 bit unused
     channel_selection: u8
+}
+
+impl LTC2983Status {
+    pub fn done(&self) -> bool {
+        self.done
+    }
 }
 
 impl From<u8> for LTC2983Status {
@@ -442,7 +449,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
                 // |31-27| Thermocouple Type
                 write_sequence.write_bits(probe.identifier(), 5);
                 // |26-0| Fixed Point Floating point (17,10) no sign bit representing the resistance
-                let resistance_fixed_point = FixedU32::<U25>::from_num(*resistance);
+                let resistance_fixed_point = FixedU32::<U10>::from_num(*resistance);
                 write_sequence.write_bits(resistance_fixed_point.to_bits().into(), 27);
 
                 self.spi_device.write(write_sequence.as_bytes())?;
@@ -490,7 +497,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
 
     pub fn start_multi_conversion(&mut self, channels: Vec<LTC2983Channel>) -> Result<(), LTC2983Error<SPI::Error>> {
         let mut write_channel_mask = ByteBuffer::new();
-        let mut mask = 0x0;
+        let mut mask: u32 = 0x0;
         for chan in channels {
             mask |= chan.mask();
         }
@@ -515,10 +522,10 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
         read_temperature_bytes.write_u16(channel.result_address());
         read_temperature_bytes.write_u32(0x0); //Dummy bytes for reading
 
-        let mut recv: [u8; 4] = [0, 0, 0, 0];
+        let mut recv: [u8; 7] = [0, 0, 0, 0, 0, 0, 0];
         self.spi_device.transfer(&mut recv, read_temperature_bytes.as_bytes())?;
 
-        Ok(LTC2983Result::from(recv))
+        Ok(LTC2983Result::from([recv[3], recv[4], recv[5], recv[6]]))
     }
 
     pub fn read_multi_temperature(&mut self, channels: Vec<LTC2983Channel>) -> Vec<Result<LTC2983Result, LTC2983Error<SPI::Error>>> {

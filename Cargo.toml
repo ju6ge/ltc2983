@@ -13,7 +13,7 @@ license-file = "LICENSE"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bytebuffer = "2.1.0"
+bytebuffer = "2.1.1"
 embedded-hal = "=1.0.0-alpha.9"
 fixed = "1.21.0"
 thiserror = "1.0.38"
