@@ -34,11 +34,12 @@
 //!
 //!```
 
-use std::convert::TryInto;
+use std::{convert::TryInto, result};
 
 use bytebuffer::ByteBuffer;
 use embedded_hal::spi::{SpiDevice, SpiBus};
 use fixed::{FixedU32, types::extra::{U25, U10, U20}, FixedI32};
+use serde::{Serialize, Deserialize};
 use thiserror::Error;
 
 const LTC2983_WRITE: u8 = 0x2;
@@ -99,6 +100,11 @@ impl ThermocoupleParameters {
 
     pub fn custom_address(mut self, addr: u16) -> Self {
         self.custom_address = Some(addr);
+        self
+    }
+
+    pub fn oc_current(mut self, oc_current: LTC2983OcCurrent) -> Self {
+        self.oc_current = oc_current;
         self
     }
 
@@ -278,7 +284,7 @@ impl ThermalProbeType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum LTC2983Result {
     Invalid(u8),
     Suspect(f32, u8),
@@ -461,6 +467,8 @@ pub enum LTC2983Error<SPI> {
     SpiError(#[from] SPI),
     #[error("Channel {0:?} not configured!")]
     ChannelUnconfigured(LTC2983Channel),
+    #[error("Error while calculating average from mutliple rounds of readouts.")]
+    AvgCalculationError
 }
 
 pub struct LTC2983<SPI> {
@@ -492,7 +500,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
     //write channel configuration
     pub fn setup_channel(&mut self,
                          probe: ThermalProbeType,
-                         channel: LTC2983Channel) -> Result<(), LTC2983Error<SPI::Error>>
+                         channel: &LTC2983Channel) -> Result<(), LTC2983Error<SPI::Error>>
     {
         match &probe {
             ThermalProbeType::Thermocouple_J(param) |
@@ -568,7 +576,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
     }
 
     //check if the channel is configured
-    pub fn channel_enabled(&mut self, channel: LTC2983Channel) -> bool {
+    pub fn channel_enabled(&mut self, channel: &LTC2983Channel) -> bool {
         let mut read_sequence = ByteBuffer::new();
         read_sequence.write_u8(LTC2983_READ);
         read_sequence.write_u16(channel.start_address());
@@ -591,7 +599,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
         }
     }
 
-    pub fn start_conversion(&mut self, channel: LTC2983Channel) -> Result<(), LTC2983Error<SPI::Error>> {
+    pub fn start_conversion(&mut self, channel: &LTC2983Channel) -> Result<(), LTC2983Error<SPI::Error>> {
         //start measurement
         let mut start_command_bytes = ByteBuffer::new();
         start_command_bytes.write_u8(LTC2983_WRITE);
@@ -604,7 +612,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
         Ok(())
     }
 
-    pub fn start_multi_conversion(&mut self, channels: Vec<LTC2983Channel>) -> Result<(), LTC2983Error<SPI::Error>> {
+    pub fn start_multi_conversion(&mut self, channels: &Vec<LTC2983Channel>) -> Result<(), LTC2983Error<SPI::Error>> {
         let mut write_channel_mask = ByteBuffer::new();
         let mut mask: u32 = 0x0;
         for chan in channels {
@@ -625,7 +633,7 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
         Ok(())
     }
 
-    pub fn read_temperature(&mut self, channel: LTC2983Channel) -> Result<LTC2983Result, LTC2983Error<SPI::Error>> {
+    pub fn read_temperature(&mut self, channel: &LTC2983Channel) -> Result<LTC2983Result, LTC2983Error<SPI::Error>> {
         let mut read_temperature_bytes = ByteBuffer::new();
         read_temperature_bytes.write_u8(LTC2983_READ);
         read_temperature_bytes.write_u16(channel.result_address());
@@ -637,10 +645,84 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
         Ok(LTC2983Result::from([recv[3], recv[4], recv[5], recv[6]]))
     }
 
-    pub fn read_multi_temperature(&mut self, channels: Vec<LTC2983Channel>) -> Vec<Result<LTC2983Result, LTC2983Error<SPI::Error>>> {
+    pub fn read_multi_temperature(&mut self, channels: &Vec<LTC2983Channel>) -> Vec<Result<LTC2983Result, LTC2983Error<SPI::Error>>> {
         channels.iter().map(|chan| {
-            self.read_temperature(*chan)
+            self.read_temperature(chan)
         }).collect()
+    }
+
+    ///do multiple rounds of conversion for a channel then calculate the average of the temperatures read out
+    pub fn get_temperature_avg(&mut self, channel: &LTC2983Channel, rounds: usize) -> Result<f32, LTC2983Error<SPI::Error>> {
+        let mut values = Vec::new();
+        let mut r = 0;
+
+        while r < rounds {
+            self.start_conversion(channel)?;
+            while !self.status()?.done {}
+            let mut was_error = false;
+            let mut v: f32 = 0.;
+            match self.read_temperature(channel) {
+                Ok(ltc_res) => {
+                    match ltc_res {
+                        LTC2983Result::Invalid(_) | LTC2983Result::Suspect(_, _) => {
+                            was_error = true;
+                        },
+                        LTC2983Result::Valid(temp) => {
+                            v = temp;
+                        }
+                    }
+                },
+                Err(_err) => {
+                    was_error = true;
+                },
+            }
+            if !was_error {
+                values.push(v);
+                r += 1;
+            }
+        }
+
+        values.into_iter().reduce(|acc, e| acc + e).and_then(|v| Some(v / ( rounds as f32))).ok_or(LTC2983Error::AvgCalculationError)
+    }
+
+    ///do multiple rounds of conversion for multiple channels then calculate the average of the temperatures read out
+    pub fn get_multi_temperature_avg(&mut self, channels: &Vec<LTC2983Channel>, rounds: usize) -> Result<Vec<f32>, LTC2983Error<SPI::Error>> {
+        let mut values = Vec::new();
+        let mut r = 0;
+
+        while r < rounds {
+            self.start_multi_conversion(channels)?;
+            while !self.status()?.done {}
+            let mut v = Vec::new();
+            let mut was_error = false;
+            for res in self.read_multi_temperature(channels) {
+                match res {
+                    Ok(ltc_res) => {
+                        match ltc_res {
+                            LTC2983Result::Invalid(_) | LTC2983Result::Suspect(_, _) => {
+                                was_error = true;
+                            },
+                            LTC2983Result::Valid(temp) => {
+                                v.push(temp);
+                            }
+                        }
+                    },
+                    Err(_err) => {
+                        was_error = true;
+                    },
+                }
+            }
+            if !was_error {
+                values.push(v);
+                r += 1;
+            }
+        }
+
+        values.into_iter().reduce(|acc, e| {
+            acc.iter().zip(e.iter()).map(|(&a, &b)| a+b).collect::<Vec<f32>>() // do a component wise add of the values
+        }).and_then(|v| {
+            Some(v.iter().map(|x| x/(rounds as f32)).collect()) // calculate average by dividing by the amount of values captured
+        }).ok_or(LTC2983Error::AvgCalculationError)
     }
 }
 
