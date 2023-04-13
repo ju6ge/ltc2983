@@ -6,7 +6,7 @@ homepage = "https://github.com/ju6ge/ltc2983"
 version = "0.2.1"
 edition = "2021"
 authors = [ "ju6ge <judge@felixrichter.tech>" ]
-license = "EUPL-1.2"
+#license = "EUPL-1.2"
 keywords = [ "embedded-hal", "spi", "driver" ]
 license-file = "LICENSE"
 

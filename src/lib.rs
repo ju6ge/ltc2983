@@ -8,7 +8,7 @@
 //!
 //! - [x] Theromcouple J,K,E,N,R,S,T,B
 //! - [ ] Custom Thermocouple
-//! - [ ] RTD
+//! - [x] RTD
 //! - [ ] Thermistor
 //! - [x] Sense Resistor
 //! - [x] Diode
@@ -34,11 +34,11 @@
 //!
 //!```
 
-use std::{convert::TryInto, result};
+use std::{convert::TryInto};
 
 use bytebuffer::ByteBuffer;
 use embedded_hal::spi::{SpiDevice, SpiBus};
-use fixed::{FixedU32, types::extra::{U25, U10, U20}, FixedI32};
+use fixed::{FixedU32, types::extra::{U10, U20}, FixedI32};
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
 
@@ -46,7 +46,7 @@ const LTC2983_WRITE: u8 = 0x2;
 const LTC2983_READ: u8 = 0x3;
 
 const STATUS_REGISTER: u16 = 0x000;
-const GLOBAL_CONFIG_REGISTER: u16 = 0x0F0;
+//const GLOBAL_CONFIG_REGISTER: u16 = 0x0F0;
 const MULTI_CHANNEL_MASK_REGISTER: u16 = 0x0F4;
 
 #[derive(Debug)]
@@ -110,6 +110,162 @@ impl ThermocoupleParameters {
 
     pub fn config_to_bits(&self) -> u64 {
         0x0 | (self.sensor_configuration.identifier() << 3) | self.oc_current.identifier()
+    }
+}
+
+#[derive(Debug)]
+#[allow(non_camel_case_types)]
+pub enum RTDCurve {
+    EuropeanStandard,
+    American,
+    Japanese,
+    ITS_90
+}
+
+impl Default for RTDCurve {
+    fn default() -> Self {
+        Self::EuropeanStandard
+    }
+}
+
+impl RTDCurve {
+    pub fn identifier(&self) -> u64 {
+        match self {
+            RTDCurve::EuropeanStandard  => 0,
+            RTDCurve::American          => 1,
+            RTDCurve::Japanese          => 2,
+            RTDCurve::ITS_90            => 3,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum RTDWireCount {
+    Wire2,
+    Wire3,
+    Wire4,
+    Wire4KelvinRsense
+}
+
+impl RTDWireCount {
+    pub fn identifier(&self) -> u64 {
+        match self {
+            RTDWireCount::Wire2             => 0,
+            RTDWireCount::Wire3             => 1,
+            RTDWireCount::Wire4             => 2,
+            RTDWireCount::Wire4KelvinRsense => 3,
+        }
+    }
+}
+
+impl Default for RTDWireCount {
+    fn default() -> Self {
+        Self::Wire2
+    }
+}
+
+#[derive(Debug)]
+pub struct RTDSensorConfiguration {
+    wire_cnt: RTDWireCount,
+    external: bool,
+    current_source_rotation: bool
+}
+
+impl Default for RTDSensorConfiguration {
+    fn default() -> Self {
+        Self {
+            wire_cnt: Default::default(),
+            external: false,
+            current_source_rotation: false
+        }
+    }
+}
+
+impl RTDSensorConfiguration {
+    pub fn wire_cnt(mut self, wire_cnt: RTDWireCount) -> Self { self.wire_cnt = wire_cnt; self }
+    pub fn external(mut self, external: bool) -> Self { self.external = external; self }
+    pub fn current_source_rotation(mut self, current_src_rotation: bool) -> Self { self.current_source_rotation = current_src_rotation; self }
+
+    pub fn to_bits(&self) -> u64 {
+        let mut bits = 0x0;
+        bits = (bits | self.wire_cnt.identifier()) << 2;
+        if self.current_source_rotation && self.wire_cnt != RTDWireCount::Wire2 && self.wire_cnt != RTDWireCount::Wire3 { // current source rotation is not support in 2 or 3 wire RTDs
+            bits = (bits | 0x1) << 1;
+        } else {
+            if !self.external {
+                bits = bits | 0x1
+            }
+        }
+
+        bits
+    }
+}
+
+#[derive(Debug)]
+pub enum RTDExcitationCurrent {
+    I5uA,
+    I10uA,
+    I25uA,
+    I50uA,
+    I100uA,
+    I250uA,
+    I500uA,
+    I1mA
+}
+
+impl Default for RTDExcitationCurrent {
+    fn default() -> Self {
+        Self::I5uA
+    }
+}
+
+impl RTDExcitationCurrent {
+    pub fn identifier(&self) -> u64 {
+       match self {
+        RTDExcitationCurrent::I5uA   => 1,
+        RTDExcitationCurrent::I10uA  => 2,
+        RTDExcitationCurrent::I25uA  => 3,
+        RTDExcitationCurrent::I50uA  => 4,
+        RTDExcitationCurrent::I100uA => 5,
+        RTDExcitationCurrent::I250uA => 6,
+        RTDExcitationCurrent::I500uA => 7,
+        RTDExcitationCurrent::I1mA   => 8,
+    }
+    }
+}
+
+#[derive(Debug)]
+pub struct RTDParameters {
+    r_sense_channel: LTC2983Channel,
+    sensor_configuration: RTDSensorConfiguration,
+    excitation_current: RTDExcitationCurrent,
+    curve: RTDCurve,
+    custom_address: Option<u16>
+}
+
+impl Default for RTDParameters {
+    fn default() -> Self {
+        Self {
+            r_sense_channel: LTC2983Channel::CH2,
+            sensor_configuration: Default::default(),
+            excitation_current: Default::default(),
+            curve: Default::default(),
+            custom_address: None
+        }
+    }
+}
+
+impl RTDParameters {
+    pub fn curve(mut self, curve: RTDCurve) -> Self { self.curve = curve; self}
+    pub fn excitation_current(mut self, excitation_current: RTDExcitationCurrent) -> Self { self.excitation_current = excitation_current; self }
+    pub fn sensor_configuration(mut self, config: RTDSensorConfiguration) -> Self { self.sensor_configuration = config; self }
+    pub fn channel(mut self, channel: LTC2983Channel) -> Self {
+        if channel == LTC2983Channel::CH1 {
+            panic!("CH1 can not be used, because there is no channel 0 and the value here indicates that the resistor is between channel x and x-1!!!!")
+        } else {
+            self.r_sense_channel = channel;
+            self
+        }
     }
 }
 
@@ -233,14 +389,14 @@ pub enum ThermalProbeType {
     Thermocouple_S(ThermocoupleParameters),
     Thermocouple_T(ThermocoupleParameters),
     Thermocouple_B(ThermocoupleParameters),
-    RTD_PT10,
-    RTD_PT50,
-    RTD_PT100,
-    RTD_PT200,
-    RTD_PT500,
-    RTD_PT1000,
-    RTD_1000,
-    RTD_NI120,
+    RTD_PT10(RTDParameters),
+    RTD_PT50(RTDParameters),
+    RTD_PT100(RTDParameters),
+    RTD_PT200(RTDParameters),
+    RTD_PT500(RTDParameters),
+    RTD_PT1000(RTDParameters),
+    RTD_1000(RTDParameters),
+    RTD_NI120(RTDParameters),
     Thermistor_44004_44033,
     Thermistor_44005_44030,
     Thermistor_44007_44034,
@@ -263,14 +419,14 @@ impl ThermalProbeType {
             ThermalProbeType::Thermocouple_S(_)      => 6,
             ThermalProbeType::Thermocouple_T(_)      => 7,
             ThermalProbeType::Thermocouple_B(_)      => 8,
-            ThermalProbeType::RTD_PT10               => 10,
-            ThermalProbeType::RTD_PT50               => 11,
-            ThermalProbeType::RTD_PT100              => 12,
-            ThermalProbeType::RTD_PT200              => 13,
-            ThermalProbeType::RTD_PT500              => 14,
-            ThermalProbeType::RTD_PT1000             => 15,
-            ThermalProbeType::RTD_1000               => 16,
-            ThermalProbeType::RTD_NI120              => 17,
+            ThermalProbeType::RTD_PT10(_)            => 10,
+            ThermalProbeType::RTD_PT50(_)            => 11,
+            ThermalProbeType::RTD_PT100(_)           => 12,
+            ThermalProbeType::RTD_PT200(_)           => 13,
+            ThermalProbeType::RTD_PT500(_)           => 14,
+            ThermalProbeType::RTD_PT1000(_)          => 15,
+            ThermalProbeType::RTD_1000(_)            => 16,
+            ThermalProbeType::RTD_NI120(_)           => 17,
             ThermalProbeType::Thermistor_44004_44033 => 19,
             ThermalProbeType::Thermistor_44005_44030 => 20,
             ThermalProbeType::Thermistor_44007_44034 => 21,
@@ -305,7 +461,7 @@ impl From<[u8; 4]> for LTC2983Result {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum LTC2983Channel {
     CH1,
     CH2,
@@ -411,6 +567,7 @@ impl LTC2983Channel {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct LTC2983Status {
     start: bool,
     done: bool,
@@ -529,15 +686,33 @@ impl<SPI> LTC2983<SPI> where SPI: SpiDevice, SPI::Bus: SpiBus {
                 self.spi_device.write(write_sequence.as_bytes())?;
                 Ok(())
             }
-            ThermalProbeType::RTD_PT10   |
-            ThermalProbeType::RTD_PT50   |
-            ThermalProbeType::RTD_PT100  |
-            ThermalProbeType::RTD_PT200  |
-            ThermalProbeType::RTD_PT500  |
-            ThermalProbeType::RTD_PT1000 |
-            ThermalProbeType::RTD_1000   |
-            ThermalProbeType::RTD_NI120  => {
-                unimplemented!();
+            ThermalProbeType::RTD_PT10(param)   |
+            ThermalProbeType::RTD_PT50(param)   |
+            ThermalProbeType::RTD_PT100(param)  |
+            ThermalProbeType::RTD_PT200(param)  |
+            ThermalProbeType::RTD_PT500(param)  |
+            ThermalProbeType::RTD_PT1000(param) |
+            ThermalProbeType::RTD_1000(param)   |
+            ThermalProbeType::RTD_NI120(param)  => {
+                let mut write_sequence = ByteBuffer::new();
+                write_sequence.write_u8(LTC2983_WRITE);              //the first byte of the communication indicates a read or write operation
+                write_sequence.write_u16(channel.start_address());   //the second two bytes hold the address to ẁrite to
+                // The 32 bit data to be written to the channel configuration register has the following format for thermocouples
+                // |31-27| RTD Type
+                write_sequence.write_bits(probe.identifier(), 5);
+                // |26-22| Rsense Channel Assignment
+                write_sequence.write_bits(param.r_sense_channel.identifier(), 5);
+                // |21-18| Sensor Configuration
+                write_sequence.write_bits(param.sensor_configuration.to_bits(), 4);
+                // |17-14| Excitation Current
+                write_sequence.write_bits(param.excitation_current.identifier(), 4);
+                // |13-12| Curve
+                write_sequence.write_bits(param.curve.identifier(), 2);
+                // |11-0| Custom RTD Data Pointer
+                write_sequence.write_bits(match &param.custom_address { None => 0, Some(addr) => *addr}.into(), 12);
+
+                self.spi_device.write(write_sequence.as_bytes())?;
+                Ok(())
             }
             ThermalProbeType::Thermistor_44004_44033 |
             ThermalProbeType::Thermistor_44005_44030 |

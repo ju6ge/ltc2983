@@ -9,7 +9,7 @@ Contributions welcome 💪
 
 - [x] Theromcouple J,K,E,N,R,S,T,B
 - [ ] Custom Theromcouple
-- [ ] RTD
+- [x] RTD
 - [ ] Thermistor
 - [x] Sense Resistor
 - [x] Diode
